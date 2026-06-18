@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: speaking-assessment
+    runtime: node
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: ADMIN_PIN
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: STORAGE_DIR
+        value: /var/data
+    disk:
+      name: speaking-assessment-data
+      mountPath: /var/data
+      sizeGB: 1

@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Teacher Admin</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="shell wide">
+      <section class="topbar">
+        <div>
+          <p class="brand-mark">Glow English Studio Speaking Test</p>
+          <h1>Review speaking submissions</h1>
+        </div>
+        <a class="admin-link" href="/">Student</a>
+      </section>
+
+      <section class="panel admin-login">
+        <label>
+          Admin PIN
+          <input id="pinInput" type="password" placeholder="Default: 123456" />
+        </label>
+        <button id="loadBtn" class="primary" type="button">Load submissions</button>
+        <button id="exportBtn" type="button" disabled>Export CSV</button>
+      </section>
+
+      <p id="adminStatus" class="status-line"></p>
+      <p id="configStatus" class="status-line"></p>
+      <section id="submissions" class="submissions"></section>
+    </main>
+
+    <script src="/admin.js"></script>
+  </body>
+</html>

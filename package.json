@@ -1,0 +1,14 @@
+{
+  "name": "speaking-assessment",
+  "version": "1.0.0",
+  "private": true,
+  "description": "English speaking assessment app with audio recording, teacher scoring, and AI feedback.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "check": "node --check server.js && node --check public/student.js && node --check public/admin.js"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

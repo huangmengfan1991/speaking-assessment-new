@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>English Speaking Assessment</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="topbar">
+        <div>
+          <p class="brand-mark">Glow English Studio Speaking Test</p>
+          <h1>Record your answers</h1>
+        </div>
+        <a class="admin-link" href="/admin.html">Teacher</a>
+      </section>
+
+      <section class="panel student-panel">
+        <div class="form-grid">
+          <label>
+            Name
+            <input id="studentName" autocomplete="name" placeholder="Your name" />
+          </label>
+          <label>
+            Grade
+            <input id="grade" placeholder="e.g. Grade 5" />
+          </label>
+          <label>
+            Class
+            <input id="className" placeholder="Optional" />
+          </label>
+        </div>
+      </section>
+
+      <section id="questionList" class="question-list"></section>
+
+      <section class="submit-bar">
+        <div>
+          <strong id="progressText">0 / 5 recorded</strong>
+          <span id="statusText">Please allow microphone access when asked.</span>
+        </div>
+        <button id="submitBtn" class="primary" type="button" disabled>Submit recordings</button>
+      </section>
+    </main>
+
+    <script src="/student.js"></script>
+  </body>
+</html>
