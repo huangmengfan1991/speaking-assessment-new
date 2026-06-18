@@ -10,10 +10,21 @@ const TRANSCRIBE_MODEL = process.env.OPENAI_TRANSCRIBE_MODEL || "gpt-4o-mini-tra
 const EVAL_MODEL = process.env.OPENAI_EVAL_MODEL || "gpt-5-mini";
 const ROOT = __dirname;
 const PUBLIC_DIR = path.join(ROOT, "public");
-const STORAGE_DIR = process.env.STORAGE_DIR || ROOT;
-const DATA_DIR = path.join(STORAGE_DIR, "data");
-const UPLOAD_DIR = path.join(STORAGE_DIR, "uploads");
-const DB_FILE = path.join(DATA_DIR, "submissions.json");
+const REQUESTED_STORAGE_DIR = process.env.STORAGE_DIR || ROOT;
+const FALLBACK_STORAGE_DIR = path.join("/tmp", "speaking-assessment");
+let storageDir = REQUESTED_STORAGE_DIR;
+
+function dataDir() {
+  return path.join(storageDir, "data");
+}
+
+function uploadDir() {
+  return path.join(storageDir, "uploads");
+}
+
+function dbFile() {
+  return path.join(dataDir(), "submissions.json");
+}
 
 const QUESTIONS = [
   {
@@ -63,20 +74,28 @@ const MIME_TYPES = {
 };
 
 function ensureStorage() {
-  fs.mkdirSync(DATA_DIR, { recursive: true });
-  fs.mkdirSync(UPLOAD_DIR, { recursive: true });
-  if (!fs.existsSync(DB_FILE)) {
-    fs.writeFileSync(DB_FILE, "[]\n");
+  try {
+    fs.mkdirSync(dataDir(), { recursive: true });
+    fs.mkdirSync(uploadDir(), { recursive: true });
+  } catch (error) {
+    if (storageDir === FALLBACK_STORAGE_DIR) throw error;
+    console.warn(`Storage directory ${storageDir} is not writable. Falling back to ${FALLBACK_STORAGE_DIR}.`);
+    storageDir = FALLBACK_STORAGE_DIR;
+    fs.mkdirSync(dataDir(), { recursive: true });
+    fs.mkdirSync(uploadDir(), { recursive: true });
+  }
+  if (!fs.existsSync(dbFile())) {
+    fs.writeFileSync(dbFile(), "[]\n");
   }
 }
 
 function readSubmissions() {
   ensureStorage();
-  return JSON.parse(fs.readFileSync(DB_FILE, "utf8"));
+  return JSON.parse(fs.readFileSync(dbFile(), "utf8"));
 }
 
 function writeSubmissions(submissions) {
-  fs.writeFileSync(DB_FILE, `${JSON.stringify(submissions, null, 2)}\n`);
+  fs.writeFileSync(dbFile(), `${JSON.stringify(submissions, null, 2)}\n`);
 }
 
 function sendJson(res, status, payload) {
@@ -129,7 +148,7 @@ function saveAudioFile(answer, submissionId) {
   const mimeType = match[1] || "audio/webm";
   const extension = safeAudioExtension(mimeType);
   const filename = `${submissionId}-${answer.questionId}${extension}`;
-  const filePath = path.join(UPLOAD_DIR, filename);
+  const filePath = path.join(uploadDir(), filename);
   fs.writeFileSync(filePath, Buffer.from(match[2], "base64"));
 
   return {
@@ -256,7 +275,7 @@ function normalizeAiFeedback(rawText, transcript) {
 }
 
 async function transcribeAudio(answer) {
-  const filePath = path.join(UPLOAD_DIR, answer.filename);
+  const filePath = path.join(uploadDir(), answer.filename);
   const form = new FormData();
   const blob = new Blob([fs.readFileSync(filePath)], {
     type: answer.mimeType || "audio/webm",
@@ -390,7 +409,7 @@ async function handleApi(req, res, pathname) {
       aiConfigured: Boolean(OPENAI_API_KEY),
       transcribeModel: TRANSCRIBE_MODEL,
       evalModel: EVAL_MODEL,
-      storageDir: STORAGE_DIR,
+      storageDir,
     });
     return;
   }
@@ -492,8 +511,8 @@ async function handleApi(req, res, pathname) {
   if (req.method === "GET" && pathname.startsWith("/api/admin/audio/")) {
     if (!requireAdmin(req, res)) return;
     const filename = path.basename(decodeURIComponent(pathname.split("/").at(-1)));
-    const filePath = path.join(UPLOAD_DIR, filename);
-    if (!filePath.startsWith(UPLOAD_DIR) || !fs.existsSync(filePath)) {
+    const filePath = path.join(uploadDir(), filename);
+    if (!filePath.startsWith(uploadDir()) || !fs.existsSync(filePath)) {
       sendJson(res, 404, { error: "Audio file not found." });
       return;
     }
@@ -550,6 +569,6 @@ server.listen(PORT, () => {
   console.log(`Speaking assessment app running at http://localhost:${PORT}`);
   console.log(`Teacher admin: http://localhost:${PORT}/admin.html`);
   console.log(`Default admin PIN: ${ADMIN_PIN}`);
-  console.log(`Storage directory: ${STORAGE_DIR}`);
+  console.log(`Storage directory: ${storageDir}`);
   console.log(`AI feedback configured: ${Boolean(OPENAI_API_KEY)}`);
 });
