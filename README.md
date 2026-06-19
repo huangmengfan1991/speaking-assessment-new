@@ -20,13 +20,13 @@ Teacher admin:
 http://localhost:4173/admin.html
 ```
 
-Default admin PIN:
+Local default admin PIN:
 
 ```text
 123456
 ```
 
-To change the admin PIN:
+For deployment, always set your own admin PIN:
 
 ```bash
 ADMIN_PIN=your-pin node server.js
