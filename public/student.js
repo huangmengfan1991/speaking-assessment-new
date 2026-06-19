@@ -11,6 +11,8 @@ let activeRecorder = null;
 let activeTimer = null;
 let activeStartedAt = 0;
 const recordings = new Map();
+const recordingAttempts = new Map();
+const MAX_ATTEMPTS = 3;
 
 function formatTime(seconds) {
   const minutes = Math.floor(seconds / 60);
@@ -21,6 +23,13 @@ function formatTime(seconds) {
 function updateProgress() {
   progressText.textContent = `${recordings.size} / ${questions.length} recorded`;
   submitBtn.disabled = recordings.size !== questions.length;
+}
+
+function getMissingQuestions() {
+  return questions
+    .map((question, index) => ({ question, index }))
+    .filter((item) => !recordings.has(item.question.id))
+    .map((item) => item.index + 1);
 }
 
 function setStatus(message, isError = false) {
@@ -44,6 +53,8 @@ function renderQuestions() {
           <div class="answer-row">
             <button type="button" data-action="record">Start recording</button>
             <span class="timer">0:00</span>
+            <span class="attempts">Attempts left: ${MAX_ATTEMPTS}</span>
+            <span class="recording-state">Not recorded</span>
             <audio controls hidden></audio>
           </div>
         </article>
@@ -62,6 +73,15 @@ async function blobToDataUrl(blob) {
 }
 
 async function startRecording(card, button) {
+  const questionId = card.dataset.questionId;
+  const attempts = recordingAttempts.get(questionId) || 0;
+
+  if (attempts >= MAX_ATTEMPTS) {
+    setStatus(`Question ${getQuestionNumber(questionId)} already used all ${MAX_ATTEMPTS} recording attempts.`, true);
+    button.disabled = true;
+    return;
+  }
+
   if (activeRecorder) {
     setStatus("Please stop the current recording first.", true);
     return;
@@ -73,6 +93,8 @@ async function startRecording(card, button) {
     activeRecorder = new MediaRecorder(stream);
     activeStartedAt = Date.now();
     const timer = card.querySelector(".timer");
+    recordingAttempts.set(questionId, attempts + 1);
+    updateAttemptDisplay(card, questionId);
 
     activeRecorder.addEventListener("dataavailable", (event) => {
       if (event.data.size > 0) chunks.push(event.data);
@@ -83,17 +105,24 @@ async function startRecording(card, button) {
       const durationSeconds = Math.max(1, Math.round((Date.now() - activeStartedAt) / 1000));
       const blob = new Blob(chunks, { type: activeRecorder.mimeType || "audio/webm" });
       const audioData = await blobToDataUrl(blob);
-      const questionId = card.dataset.questionId;
       const audio = card.querySelector("audio");
+      const usedAttempts = recordingAttempts.get(questionId) || 0;
 
       recordings.set(questionId, { questionId, audioData, durationSeconds });
       audio.src = URL.createObjectURL(blob);
       audio.hidden = false;
-      button.textContent = "Record again";
+      button.textContent = usedAttempts >= MAX_ATTEMPTS ? "No attempts left" : "Record again";
       button.dataset.action = "record";
+      button.disabled = usedAttempts >= MAX_ATTEMPTS;
+      card.querySelector(".recording-state").textContent = "Recorded";
+      card.classList.add("is-recorded");
       stream.getTracks().forEach((track) => track.stop());
       activeRecorder = null;
-      setStatus("Recording saved. You can re-record any answer before submitting.");
+      setStatus(
+        usedAttempts >= MAX_ATTEMPTS
+          ? `Question ${getQuestionNumber(questionId)} saved. No recording attempts left for this question.`
+          : `Question ${getQuestionNumber(questionId)} saved. You can re-record before submitting if needed.`,
+      );
       updateProgress();
     });
 
@@ -108,6 +137,16 @@ async function startRecording(card, button) {
   } catch (error) {
     setStatus(`Microphone error: ${error.message}`, true);
   }
+}
+
+function getQuestionNumber(questionId) {
+  return questions.findIndex((question) => question.id === questionId) + 1;
+}
+
+function updateAttemptDisplay(card, questionId) {
+  const attempts = recordingAttempts.get(questionId) || 0;
+  const attemptsLeft = Math.max(0, MAX_ATTEMPTS - attempts);
+  card.querySelector(".attempts").textContent = `Attempts left: ${attemptsLeft}`;
 }
 
 function stopRecording() {
@@ -128,6 +167,12 @@ questionList.addEventListener("click", (event) => {
 });
 
 submitBtn.addEventListener("click", async () => {
+  const missingQuestions = getMissingQuestions();
+  if (missingQuestions.length > 0) {
+    setStatus(`Please finish all questions before submitting. Missing: ${missingQuestions.join(", ")}.`, true);
+    return;
+  }
+
   const payload = {
     studentName: studentNameInput.value,
     grade: gradeInput.value,

@@ -223,6 +223,22 @@ select:focus {
   font-weight: 800;
 }
 
+.attempts,
+.recording-state {
+  min-width: 118px;
+  color: var(--muted);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.recording-state {
+  color: var(--warning);
+}
+
+.is-recorded .recording-state {
+  color: var(--accent-dark);
+}
+
 .answer-row {
   border-top: 1px solid var(--line);
   padding-top: 14px;
