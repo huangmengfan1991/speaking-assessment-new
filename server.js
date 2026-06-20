@@ -255,7 +255,7 @@ async function saveAudioFile(answer, submissionId) {
   const extension = safeAudioExtension(mimeType);
   const filename = `${submissionId}-${answer.questionId}${extension}`;
   const audioBuffer = Buffer.from(match[2], "base64");
-  const storagePath = `${submissionId}/${filename}`;
+  const storagePath = filename;
 
   if (isSupabaseConfigured()) {
     const { error } = await getSupabase().storage
