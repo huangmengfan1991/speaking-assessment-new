@@ -64,17 +64,25 @@ This app is ready for a Render Web Service.
 4. Set environment variables:
    - `ADMIN_PIN`: your teacher admin password
    - `OPENAI_API_KEY`: optional, only if you want AI feedback
-   - `STORAGE_DIR`: `/var/data`
-5. Add a persistent disk:
-   - Mount path: `/var/data`
-   - Size: start with `1 GB`
+   - `SUPABASE_URL`: your Supabase project URL
+   - `SUPABASE_SERVICE_ROLE_KEY`: your Supabase service role key
+   - `SUPABASE_BUCKET`: `speaking-audio`
+   - `STORAGE_DIR`: optional fallback, use `/tmp/speaking-assessment` on Render Free
 
 After deploy, Render gives you a public URL. Student page is `/`; teacher page is `/admin.html`.
 
 ## Data
 
-- Audio files are stored in `uploads/`.
-- Submission records and teacher reviews are stored in `data/submissions.json`.
+- With Supabase configured, audio files are stored in Supabase Storage and submissions/reviews are stored in Supabase Database.
+- Without Supabase configured, audio files are stored in `uploads/` and records are stored in `data/submissions.json`.
 - The teacher admin can export a CSV file.
 
-For deployment, set `STORAGE_DIR=/var/data` and attach a persistent disk so uploaded audio and scores survive restarts.
+## Supabase setup
+
+1. Create a Supabase project.
+2. Open SQL Editor.
+3. Run the contents of `supabase-setup.sql`.
+4. In Project Settings > API, copy:
+   - Project URL -> `SUPABASE_URL`
+   - service_role secret key -> `SUPABASE_SERVICE_ROLE_KEY`
+5. Add those variables in Render Environment and redeploy.

@@ -8,11 +8,16 @@ const ADMIN_PIN = process.env.ADMIN_PIN || "123456";
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
 const TRANSCRIBE_MODEL = process.env.OPENAI_TRANSCRIBE_MODEL || "gpt-4o-mini-transcribe";
 const EVAL_MODEL = process.env.OPENAI_EVAL_MODEL || "gpt-5-mini";
+const SUPABASE_URL = (process.env.SUPABASE_URL || "").replace(/\/$/, "");
+const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
+const SUPABASE_BUCKET = process.env.SUPABASE_BUCKET || "speaking-audio";
+const SUPABASE_TABLE = process.env.SUPABASE_TABLE || "speaking_submissions";
 const ROOT = __dirname;
 const PUBLIC_DIR = path.join(ROOT, "public");
 const REQUESTED_STORAGE_DIR = process.env.STORAGE_DIR || ROOT;
 const FALLBACK_STORAGE_DIR = path.join("/tmp", "speaking-assessment");
 let storageDir = REQUESTED_STORAGE_DIR;
+let supabaseClient = null;
 
 function dataDir() {
   return path.join(storageDir, "data");
@@ -24,6 +29,21 @@ function uploadDir() {
 
 function dbFile() {
   return path.join(dataDir(), "submissions.json");
+}
+
+function isSupabaseConfigured() {
+  return Boolean(SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY);
+}
+
+function getSupabase() {
+  if (!isSupabaseConfigured()) return null;
+  if (!supabaseClient) {
+    const { createClient } = require("@supabase/supabase-js");
+    supabaseClient = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
+      auth: { persistSession: false },
+    });
+  }
+  return supabaseClient;
 }
 
 const QUESTIONS = [
@@ -98,6 +118,92 @@ function writeSubmissions(submissions) {
   fs.writeFileSync(dbFile(), `${JSON.stringify(submissions, null, 2)}\n`);
 }
 
+function fromSupabaseRow(row) {
+  return {
+    id: row.id,
+    studentName: row.student_name,
+    grade: row.grade,
+    className: row.class_name || "",
+    submittedAt: row.submitted_at,
+    answers: row.answers || [],
+    ratings: row.ratings || {},
+    teacherNotes: row.teacher_notes || {},
+    aiFeedback: row.ai_feedback || {},
+    totalScore: row.total_score || "",
+    reviewedAt: row.reviewed_at || "",
+  };
+}
+
+function toSupabaseRow(submission) {
+  return {
+    id: submission.id,
+    student_name: submission.studentName,
+    grade: submission.grade,
+    class_name: submission.className,
+    submitted_at: submission.submittedAt,
+    answers: submission.answers,
+    ratings: submission.ratings || {},
+    teacher_notes: submission.teacherNotes || {},
+    ai_feedback: submission.aiFeedback || {},
+    total_score: String(submission.totalScore || ""),
+    reviewed_at: submission.reviewedAt || null,
+  };
+}
+
+async function loadSubmissions() {
+  if (!isSupabaseConfigured()) return readSubmissions();
+  const { data, error } = await getSupabase()
+    .from(SUPABASE_TABLE)
+    .select("*")
+    .order("submitted_at", { ascending: false });
+  if (error) throw new Error(`Supabase read failed: ${error.message}`);
+  return data.map(fromSupabaseRow);
+}
+
+async function insertSubmission(submission) {
+  if (!isSupabaseConfigured()) {
+    const submissions = readSubmissions();
+    submissions.unshift(submission);
+    writeSubmissions(submissions);
+    return;
+  }
+
+  const { error } = await getSupabase().from(SUPABASE_TABLE).insert(toSupabaseRow(submission));
+  if (error) throw new Error(`Supabase insert failed: ${error.message}`);
+}
+
+async function updateSubmission(id, patch) {
+  if (!isSupabaseConfigured()) {
+    const submissions = readSubmissions();
+    const index = submissions.findIndex((submission) => submission.id === id);
+    if (index === -1) return null;
+    submissions[index] = { ...submissions[index], ...patch };
+    writeSubmissions(submissions);
+    return submissions[index];
+  }
+
+  const rowPatch = {};
+  if ("ratings" in patch) rowPatch.ratings = patch.ratings || {};
+  if ("teacherNotes" in patch) rowPatch.teacher_notes = patch.teacherNotes || {};
+  if ("aiFeedback" in patch) rowPatch.ai_feedback = patch.aiFeedback || {};
+  if ("totalScore" in patch) rowPatch.total_score = String(patch.totalScore || "");
+  if ("reviewedAt" in patch) rowPatch.reviewed_at = patch.reviewedAt || null;
+
+  const { data, error } = await getSupabase()
+    .from(SUPABASE_TABLE)
+    .update(rowPatch)
+    .eq("id", id)
+    .select("*")
+    .single();
+  if (error) throw new Error(`Supabase update failed: ${error.message}`);
+  return fromSupabaseRow(data);
+}
+
+async function findSubmission(id) {
+  const submissions = await loadSubmissions();
+  return submissions.find((submission) => submission.id === id) || null;
+}
+
 function sendJson(res, status, payload) {
   const body = JSON.stringify(payload);
   res.writeHead(status, {
@@ -139,7 +245,7 @@ function safeAudioExtension(mimeType) {
   return ".webm";
 }
 
-function saveAudioFile(answer, submissionId) {
+async function saveAudioFile(answer, submissionId) {
   const match = /^data:(.*?);base64,(.*)$/.exec(answer.audioData || "");
   if (!match) {
     throw new Error("Invalid audio data.");
@@ -148,12 +254,36 @@ function saveAudioFile(answer, submissionId) {
   const mimeType = match[1] || "audio/webm";
   const extension = safeAudioExtension(mimeType);
   const filename = `${submissionId}-${answer.questionId}${extension}`;
+  const audioBuffer = Buffer.from(match[2], "base64");
+  const storagePath = `${submissionId}/${filename}`;
+
+  if (isSupabaseConfigured()) {
+    const { error } = await getSupabase().storage
+      .from(SUPABASE_BUCKET)
+      .upload(storagePath, audioBuffer, {
+        contentType: mimeType,
+        upsert: true,
+      });
+    if (error) throw new Error(`Supabase audio upload failed: ${error.message}`);
+
+    return {
+      questionId: answer.questionId,
+      filename,
+      storagePath,
+      audioUrl: `/api/admin/audio/${encodeURIComponent(storagePath)}`,
+      mimeType,
+      durationSeconds: Number(answer.durationSeconds || 0),
+      sizeBytes: audioBuffer.length,
+    };
+  }
+
   const filePath = path.join(uploadDir(), filename);
-  fs.writeFileSync(filePath, Buffer.from(match[2], "base64"));
+  fs.writeFileSync(filePath, audioBuffer);
 
   return {
     questionId: answer.questionId,
     filename,
+    storagePath: "",
     audioUrl: `/uploads/${filename}`,
     mimeType,
     durationSeconds: Number(answer.durationSeconds || 0),
@@ -275,9 +405,17 @@ function normalizeAiFeedback(rawText, transcript) {
 }
 
 async function transcribeAudio(answer) {
-  const filePath = path.join(uploadDir(), answer.filename);
+  let audioBuffer;
+  if (isSupabaseConfigured() && answer.storagePath) {
+    const { data, error } = await getSupabase().storage.from(SUPABASE_BUCKET).download(answer.storagePath);
+    if (error) throw new Error(`Supabase audio download failed: ${error.message}`);
+    audioBuffer = Buffer.from(await data.arrayBuffer());
+  } else {
+    const filePath = path.join(uploadDir(), answer.filename);
+    audioBuffer = fs.readFileSync(filePath);
+  }
   const form = new FormData();
-  const blob = new Blob([fs.readFileSync(filePath)], {
+  const blob = new Blob([audioBuffer], {
     type: answer.mimeType || "audio/webm",
   });
   form.append("file", blob, answer.filename);
@@ -336,25 +474,24 @@ Return strict JSON only:
   return normalizeAiFeedback(extractResponseText(payload), transcript);
 }
 
-function updateAiFeedback(submissionId, questionId, feedback) {
-  const submissions = readSubmissions();
-  const index = submissions.findIndex((submission) => submission.id === submissionId);
-  if (index === -1) return;
-  submissions[index].aiFeedback = {
-    ...(submissions[index].aiFeedback || {}),
+async function updateAiFeedback(submissionId, questionId, feedback) {
+  const submission = await findSubmission(submissionId);
+  if (!submission) return;
+  await updateSubmission(submissionId, {
+    aiFeedback: {
+      ...(submission.aiFeedback || {}),
     [questionId]: feedback,
-  };
-  writeSubmissions(submissions);
+    },
+  });
 }
 
 async function generateAiFeedbackForSubmission(submissionId) {
-  const submissions = readSubmissions();
-  const submission = submissions.find((item) => item.id === submissionId);
+  const submission = await findSubmission(submissionId);
   if (!submission) return;
 
   if (!OPENAI_API_KEY) {
     for (const answer of submission.answers) {
-      updateAiFeedback(submissionId, answer.questionId, {
+      await updateAiFeedback(submissionId, answer.questionId, {
         status: "not_configured",
         transcript: "",
         summary: "Set OPENAI_API_KEY and regenerate AI feedback.",
@@ -369,7 +506,7 @@ async function generateAiFeedbackForSubmission(submissionId) {
 
   for (const answer of submission.answers) {
     const question = QUESTIONS.find((item) => item.id === answer.questionId);
-    updateAiFeedback(submissionId, answer.questionId, {
+    await updateAiFeedback(submissionId, answer.questionId, {
       status: "processing",
       transcript: "",
       summary: "AI feedback is being generated.",
@@ -382,9 +519,9 @@ async function generateAiFeedbackForSubmission(submissionId) {
     try {
       const transcript = await transcribeAudio(answer);
       const feedback = await evaluateTranscript(question, answer, transcript);
-      updateAiFeedback(submissionId, answer.questionId, feedback);
+      await updateAiFeedback(submissionId, answer.questionId, feedback);
     } catch (error) {
-      updateAiFeedback(submissionId, answer.questionId, {
+      await updateAiFeedback(submissionId, answer.questionId, {
         status: "error",
         transcript: "",
         summary: error.message,
@@ -410,6 +547,8 @@ async function handleApi(req, res, pathname) {
       transcribeModel: TRANSCRIBE_MODEL,
       evalModel: EVAL_MODEL,
       storageDir,
+      supabaseConfigured: isSupabaseConfigured(),
+      supabaseBucket: SUPABASE_BUCKET,
     });
     return;
   }
@@ -419,8 +558,7 @@ async function handleApi(req, res, pathname) {
       const payload = JSON.parse(await readBody(req));
       const clean = sanitizeSubmission(payload);
       const id = crypto.randomUUID();
-      const answers = clean.answers.map((answer) => saveAudioFile(answer, id));
-      const submissions = readSubmissions();
+      const answers = await Promise.all(clean.answers.map((answer) => saveAudioFile(answer, id)));
       const submission = {
         id,
         studentName: clean.name,
@@ -433,8 +571,7 @@ async function handleApi(req, res, pathname) {
         aiFeedback: {},
         totalScore: "",
       };
-      submissions.unshift(submission);
-      writeSubmissions(submissions);
+      await insertSubmission(submission);
       generateAiFeedbackForSubmission(id).catch((error) => {
         console.error("AI feedback generation failed:", error);
       });
@@ -447,7 +584,7 @@ async function handleApi(req, res, pathname) {
 
   if (req.method === "GET" && pathname === "/api/admin/submissions") {
     if (!requireAdmin(req, res)) return;
-    sendJson(res, 200, { submissions: readSubmissions().map(publicSubmission), questions: QUESTIONS });
+    sendJson(res, 200, { submissions: (await loadSubmissions()).map(publicSubmission), questions: QUESTIONS });
     return;
   }
 
@@ -456,21 +593,18 @@ async function handleApi(req, res, pathname) {
     const id = pathname.split("/").at(-1);
     try {
       const payload = JSON.parse(await readBody(req));
-      const submissions = readSubmissions();
-      const index = submissions.findIndex((submission) => submission.id === id);
-      if (index === -1) {
+      const submission = await findSubmission(id);
+      if (!submission) {
         sendJson(res, 404, { error: "Submission not found." });
         return;
       }
-      submissions[index] = {
-        ...submissions[index],
+      const updatedSubmission = await updateSubmission(id, {
         ratings: payload.ratings || {},
         teacherNotes: {},
         totalScore: payload.totalScore || "",
         reviewedAt: new Date().toISOString(),
-      };
-      writeSubmissions(submissions);
-      sendJson(res, 200, { submission: publicSubmission(submissions[index]) });
+      });
+      sendJson(res, 200, { submission: publicSubmission(updatedSubmission) });
     } catch (error) {
       sendJson(res, 400, { error: error.message });
     }
@@ -480,8 +614,8 @@ async function handleApi(req, res, pathname) {
   if (req.method === "POST" && pathname.startsWith("/api/admin/ai-feedback/")) {
     if (!requireAdmin(req, res)) return;
     const id = pathname.split("/").at(-1);
-    const submissions = readSubmissions();
-    if (!submissions.some((submission) => submission.id === id)) {
+    const submission = await findSubmission(id);
+    if (!submission) {
       sendJson(res, 404, { error: "Submission not found." });
       return;
     }
@@ -499,7 +633,7 @@ async function handleApi(req, res, pathname) {
 
   if (req.method === "GET" && pathname === "/api/admin/export.csv") {
     if (!requireAdmin(req, res)) return;
-    const csv = buildCsv(readSubmissions());
+    const csv = buildCsv(await loadSubmissions());
     res.writeHead(200, {
       "Content-Type": "text/csv; charset=utf-8",
       "Content-Disposition": "attachment; filename=\"speaking-assessment.csv\"",
@@ -510,7 +644,21 @@ async function handleApi(req, res, pathname) {
 
   if (req.method === "GET" && pathname.startsWith("/api/admin/audio/")) {
     if (!requireAdmin(req, res)) return;
-    const filename = path.basename(decodeURIComponent(pathname.split("/").at(-1)));
+    const requestedPath = decodeURIComponent(pathname.replace("/api/admin/audio/", ""));
+    if (isSupabaseConfigured()) {
+      const { data, error } = await getSupabase().storage.from(SUPABASE_BUCKET).download(requestedPath);
+      if (error) {
+        sendJson(res, 404, { error: "Audio file not found." });
+        return;
+      }
+      const extension = path.extname(requestedPath);
+      const audioBuffer = Buffer.from(await data.arrayBuffer());
+      res.writeHead(200, { "Content-Type": MIME_TYPES[extension] || "application/octet-stream" });
+      res.end(audioBuffer);
+      return;
+    }
+
+    const filename = path.basename(requestedPath);
     const filePath = path.join(uploadDir(), filename);
     if (!filePath.startsWith(uploadDir()) || !fs.existsSync(filePath)) {
       sendJson(res, 404, { error: "Audio file not found." });
